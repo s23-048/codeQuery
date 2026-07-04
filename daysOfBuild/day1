@@ -1,0 +1,286 @@
+Day 1 Deep Dive — The Code Parser
+The Big Picture: Where Does This Fit?
+Here's the full CodeQuery pipeline. Today we built Step 2 — the chunker:
+
+
+Step 1: Clone a repo          → git clone
+Step 2: Chunk it              → Tree-sitter parser (TODAY ✅)
+Step 3: Index the chunks      → BM25 + ChromaDB embeddings
+Step 4: Search                → Hybrid search with RRF fusion
+Step 5: Answer                → GPT-4o generates answer from top chunks
+Step 6: Serve                 → FastAPI + Streamlit
+The parser's job: Take raw source files → produce a list of CodeChunk objects, where each chunk is one complete function or class. These chunks are what get embedded and searched later.
+
+Why Tree-sitter? (Interview Question #1)
+There are 3 ways to break code into chunks:
+
+❌ Option 1: Fixed-line chunking (every 200 lines)
+python
+
+# Imagine this function spans lines 190-220:
+def process_payment(order):
+    validate(order)
+    charge(order.card)     # ← line 200: SPLIT HAPPENS HERE
+    send_receipt(order)
+    return True
+Chunk 1 gets lines 1-200 (half the function), Chunk 2 gets lines 201-400 (the other half). When you embed Chunk 1, the vector represents "a function that validates and charges" — missing the receipt part. Retrieval quality drops because you're searching over fragments.
+
+❌ Option 2: Python's ast module
+python
+
+import ast
+tree = ast.parse(source_code)
+Works, but only for Python. We need JS/TS support too. Also, ast produces an abstract syntax tree — it throws away comments, formatting, and whitespace. We want the actual source text.
+
+✅ Option 3: Tree-sitter (what we use)
+Works for 40+ languages (we use Python, JS, TS)
+Produces a concrete syntax tree — every token preserved
+Each node knows its exact byte range → we can extract the original source text
+Extremely fast (written in C, used in editors like Neovim, GitHub)
+The AST — What It Actually Looks Like
+When Tree-sitter parses this Python code:
+
+python
+
+def hello(x):
+    return x + 1
+class Foo:
+    def bar(self):
+        pass
+It builds this tree:
+
+
+module                          ← root node
+├── function_definition         ← "def hello(x):"
+│   ├── def                     ← keyword token
+│   ├── identifier: "hello"     ← the function NAME
+│   ├── parameters: (x)
+│   └── block                   ← the function BODY
+│       └── return_statement
+└── class_definition            ← "class Foo:"
+    ├── class                   ← keyword token
+    ├── identifier: "Foo"       ← the class NAME
+    └── block                   ← the class BODY
+        └── function_definition ← method "bar" (nested!)
+Key insight: Every node has:
+
+.type → "function_definition", "class_definition", "identifier", etc.
+.text → the raw bytes of that node and all its children
+.children → list of child nodes
+.start_point / .end_point → (row, col) tuples (0-indexed)
+So function_definition.text gives you the entire function source code, including its body. That's our chunk.
+
+Language Differences (Important!)
+Each language grammar uses slightly different node type names:
+
+What	Python	JavaScript / TypeScript
+Function	function_definition	function_declaration
+Class	class_definition	class_declaration
+Class name	identifier	identifier (JS) / type_identifier (TS)
+Arrow function	N/A	arrow_function inside lexical_declaration
+The _definition vs _declaration naming is just a grammar convention — they represent the same concept.
+
+Arrow Functions — The Tricky Part
+In JavaScript/TypeScript, this is extremely common:
+
+javascript
+
+const processItem = (item) => {
+    return item.toUpperCase();
+};
+The AST for this is:
+
+
+lexical_declaration            ← "const ... ;"
+├── const
+├── variable_declarator        ← "processItem = (...) => {...}"
+│   ├── identifier: "processItem"   ← the NAME is here
+│   ├── =
+│   └── arrow_function         ← the BODY is here
+│       ├── formal_parameters
+│       └── statement_block
+└── ;
+The name (processItem) is NOT on the arrow_function node — it's on the variable_declarator. So we look for lexical_declaration nodes that contain an arrow_function child, and extract the name from the variable_declarator.
+
+The Code, Piece by Piece
+1. CodeChunk — The Data Model (
+L58–L131
+)
+python
+
+@dataclass
+class CodeChunk:
+    chunk_id: str        # "a1b2c3d4e5f6" — 12 hex chars
+    file_path: str       # "parser/code_parser.py" — relative to repo root
+    language: str        # "python" | "javascript" | "typescript"
+    chunk_type: str      # "function" | "class" | "module"
+    name: str            # "parse_file" | "CodeParser" | "__init__"
+    code: str            # the actual source text
+    start_line: int      # 1-indexed
+    end_line: int        # 1-indexed
+Why these fields?
+
+chunk_id → needed as document ID in ChromaDB (Day 4). Must be deterministic so re-indexing doesn't create duplicates.
+file_path → shown in search results ("found in parser/code_parser.py")
+language → might need it for syntax highlighting in the UI
+chunk_type + name → for display and for to_search_text()
+code → the actual content that gets embedded
+start_line / end_line → for citations ("lines 42-67")
+2. to_search_text() — Why It Matters (
+L107–L121
+)
+python
+
+def to_search_text(self) -> str:
+    return f"{self.chunk_type} {self.name} in {self.file_path}:\n{self.code}"
+Output example:
+
+
+function parse_file in parser/code_parser.py:
+def parse_file(self, file_path: str) -> list[CodeChunk]:
+    ...
+Why not just embed the raw code? If someone searches for "parse_file", that string appears in the function signature but the function name is technically metadata. By prepending "function parse_file in parser/code_parser.py:", we make the name AND the file path part of the searchable text. BM25 (keyword search) directly matches these tokens. Embeddings also pick up on them.
+
+3. _make_chunk_id() — Deterministic IDs (
+L137–L151
+)
+python
+
+def _make_chunk_id(file_path: str, name: str, start_line: int) -> str:
+    raw = f"{file_path}:{name}:{start_line}"
+    return hashlib.md5(raw.encode()).hexdigest()[:12]
+Input: "parser/code_parser.py:CodeParser:202"
+Output: "0b303775c66a" (always the same for the same input)
+Why not UUID? UUIDs are random — if you re-index the same repo, every chunk gets a new ID, and ChromaDB creates duplicates. MD5 of the same input always gives the same output → ChromaDB can upsert (update-or-insert) cleanly.
+
+Why truncate to 12 chars? 12 hex chars = 48 bits = ~281 trillion possible IDs. For 10,000 chunks, collision probability is ~1 in 28 billion. More than enough.
+
+4. Language Configuration (
+L157–L196
+)
+python
+
+LANGUAGE_MAP = {
+    ".py":  ("python",     tree_sitter.Language(tspython.language())),
+    ".js":  ("javascript", tree_sitter.Language(tsjavascript.language())),
+    ".jsx": ("javascript", tree_sitter.Language(tsjavascript.language())),
+    ".ts":  ("typescript", tree_sitter.Language(tstypescript.language_typescript())),
+    ".tsx": ("typescript", tree_sitter.Language(tstypescript.language_tsx())),
+}
+Built once at module load time — not per file. Creating Language objects is cheap but doing it 10,000 times adds up. This is the "perf mistake" mentioned in the build guide.
+
+TIP
+
+.jsx uses the JavaScript grammar (not a separate one). .tsx uses a special TSX grammar from tree-sitter-typescript — it's different from the regular TS grammar because TSX has JSX syntax that would confuse the TypeScript parser.
+
+5. SKIP_DIRS — What We Don't Index (
+L188–L193
+)
+python
+
+SKIP_DIRS = {
+    ".git", "node_modules", "__pycache__", "venv", ".venv",
+    "env", "dist", "build", ".next", ".nuxt", "coverage", ...
+}
+These contain third-party code, build artifacts, or VCS internals. Indexing node_modules would give you 50,000 chunks of library code that drowns out the actual project code in search results.
+
+6. CodeParser._find_chunks() — The Core Algorithm (
+L293–L382
+)
+This is the most important method. It recursively walks the AST:
+
+
+Start at root node
+├── Is this a function node? → Extract as chunk, STOP recursing
+├── Is this a class node?    → Extract as chunk, STOP recursing  
+├── Is this an arrow func?   → Extract as chunk, STOP recursing
+└── None of the above?       → Recurse into children
+The key decision: why stop recursing after finding a chunk?
+
+Consider this code:
+
+python
+
+class Calculator:
+    def add(self, a, b):
+        return a + b
+    def multiply(self, a, b):
+        return a * b
+If we DON'T stop recursing after the class, we'd get:
+
+Chunk 1: class Calculator (including add and multiply)
+Chunk 2: def add (DUPLICATE — already inside Chunk 1)
+Chunk 3: def multiply (DUPLICATE — already inside Chunk 1)
+By stopping at the class level, we get just Chunk 1 — the whole class as one unit. This keeps methods together with their class context, which is better for search.
+
+Why recurse for non-chunk nodes? Because of patterns like:
+
+javascript
+
+export function fetchData(url) { ... }
+The AST is: export_statement → function_declaration. If we only checked top-level children of the root, we'd miss fetchData because it's inside an export_statement. Recursing through non-chunk nodes lets us find it.
+
+7. parse_file() — Single File Entry Point (
+L388–L440
+)
+Flow:
+
+Check file extension → skip if unsupported
+Read file bytes
+Parse with Tree-sitter → get AST
+Run _find_chunks() → get function/class chunks
+Fallback: if no chunks found AND file ≤ 200 lines → create one "module" chunk
+The module fallback is important. Without it, files like config.py, constants.js, or __init__.py that have no functions/classes would be completely invisible to search. A user asking "what are the configuration settings?" would get no results.
+
+8. parse_repository() — Whole Repo Scan (
+L442–L487
+)
+python
+
+for dirpath, dirnames, filenames in os.walk(repo_path):
+    dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+    ...
+IMPORTANT
+
+dirnames[:] = ... modifies the list in place. This tells os.walk to skip those directories entirely — it won't even enter them. If you did dirnames = [...] (without [:]), you'd create a new local variable and os.walk would still enter everything. This is a Python gotcha worth knowing.
+
+What We Tested
+Test	What it verified
+Parse code_parser.py itself	Finds CodeChunk class, _make_chunk_id function, CodeParser class
+Parse Python test file	Functions + class (methods stay inside class, not split out)
+Parse JavaScript test file	Regular functions + arrow functions + classes
+Parse TypeScript test file	Functions + async arrow functions + classes (with type_identifier)
+Parse __init__.py	Module fallback works for files without functions/classes
+Parse entire tests/ directory	Multi-file scanning with correct relative paths
+to_search_text() output	Metadata (name, path) prepended to code for searchability
+Design Decisions to Know Cold (Interview)
+1. "Why AST chunking instead of fixed-line?"
+Fixed-line can cut a function in half → the embedding represents a fragment, not a complete idea → retrieval quality drops. AST chunking guarantees every chunk is a complete function or class.
+
+2. "Why keep classes as single chunks instead of splitting methods?"
+If you split methods out, each method chunk loses the class docstring, class-level attributes, and the relationship between methods. For search, "class Calculator with add and multiply" as one chunk is more useful than three orphaned method chunks.
+
+3. "Why deterministic chunk IDs?"
+Re-indexing the same repo produces the same IDs → ChromaDB can upsert without creating duplicates. UUIDs would create duplicates every time.
+
+4. "Why to_search_text() includes metadata?"
+Without it, searching for a function by name would only match if that name appeared in the code body. Prepending "function parse_file in code_parser.py:" makes names and file paths directly searchable by both BM25 and embeddings.
+
+5. "What about files with no functions?"
+The module fallback catches config files, init files, and small scripts (≤ 200 lines). Without it, those files are invisible to search — a real gap in coverage.
+
+Files Created Today
+
+codeQuery/
+├── parser/
+│   ├── __init__.py              ← package init
+│   └── code_parser.py           ← THE PARSER (552 lines)
+├── tests/
+│   ├── test_sample.py           ← Python test fixture
+│   ├── test_sample.js           ← JavaScript test fixture
+│   └── test_sample.ts           ← TypeScript test fixture
+├── .env                         ← config (simplified for our scope)
+├── .env.example                 ← safe-to-commit version
+├── .gitignore
+├── pyrightconfig.json           ← IDE type checker config
+└── requirements.txt             ← pip freeze
