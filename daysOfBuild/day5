@@ -1,0 +1,112 @@
+# Day 5 — Hybrid Search with RRF Fusion
+
+## What we built
+`search/hybrid_search.py` — the module that ties together Day 3 (embeddings) and Day 4 (BM25) into a single search engine using **Reciprocal Rank Fusion (RRF)**.
+
+## The core problem: how do you merge two ranked lists?
+
+After Day 3 and Day 4, we have two search engines that return results in completely different formats:
+
+```
+Semantic search (cosine similarity):  [0.82, 0.79, 0.71, 0.65, ...]  — bounded 0 to 1
+BM25 search (term frequency scores):  [14.7, 8.2, 5.1, 3.8, ...]    — unbounded positive floats
+```
+
+You **can't** just add these scores — 14.7 + 0.82 makes no sense. The BM25 score would dominate.
+
+Even normalizing doesn't work well because the *distributions* are different. BM25 is spiky (big gap between #1 and #2), cosine is smooth (small gaps between ranks).
+
+## The solution: Reciprocal Rank Fusion (RRF)
+
+**Ignore scores entirely. Use only the rank positions.**
+
+```
+RRF_score(chunk) = Σ  1 / (k + rank + 1)
+```
+
+For each result list, a chunk at rank 0 (top) gets score `1/(k+1)`, at rank 1 gets `1/(k+2)`, etc.
+
+If a chunk appears in BOTH lists, its scores add up → it gets boosted.
+
+### Why k=60?
+
+The constant `k` controls how much rank position matters:
+- Small k (e.g., 1): rank 0 gets 0.5, rank 1 gets 0.33 → noisy, huge gaps
+- Large k (e.g., 60): rank 0 gets 0.0164, rank 1 gets 0.0161 → stable, small gaps
+
+k=60 is from the original RRF paper (Cormack et al., 2009). It makes the ranking stable so that items appearing in **multiple** lists get a reliable boost.
+
+### Concrete example from our test
+
+Query: `"tokenize_code"` (exact identifier — BM25 strength):
+```
+Rank   Name              Semantic   BM25    RRF Score    Both?
+0      tokenize_code     #0         #0      0.032787     ✓
+1      CodeChunk         #1         #2      0.032002     ✓
+2      CodeEmbedder      #2         #5      0.031025     ✓
+8      format_output     #3         —       0.015625
+```
+
+Notice `format_output` was #3 in semantic but doesn't appear in BM25 at all → its RRF score (0.0156) is half of `tokenize_code`'s (0.0328) because it only got one contribution instead of two.
+
+## Three query types we tested
+
+| Query Type | Query | Observation |
+|---|---|---|
+| Exact identifier | `tokenize_code` | BM25 nails it, semantic agrees → 8/10 in both |
+| Conceptual | `function that parses code` | Both contribute equally → 10/10 in both |
+| Mixed | `walk syntax tree find nodes` | Semantic leads, BM25 helps filter → 5/10 in both |
+
+**This is exactly why hybrid search works** — no single engine dominates for all query types.
+
+## What the code does
+
+### `reciprocal_rank_fusion()` — the whiteboard function
+Takes any number of result lists, scores each chunk by `1/(k + rank + 1)`, returns sorted chunk_ids. This is the one you should memorize.
+
+### `reciprocal_rank_fusion_detailed()` — debug version
+Same algorithm but also tracks which lists each chunk appeared in and at what rank. Used by `search_debug()`.
+
+### `HybridSearch` class
+- `index(chunks)` → builds BOTH embedding index and BM25 index from the same chunks
+- `search(query)` → runs both searches, fuses with RRF, enriches with metadata
+- `search_debug(query)` → returns all intermediate results for side-by-side comparison
+- `load()` → restores pre-built indexes from disk (ChromaDB auto-loads, BM25 from pickle)
+
+### Lazy initialization
+The embedding model is heavy (~90MB). `HybridSearch` doesn't load it until first use (`_ensure_embedder()`). This means creating a `HybridSearch()` object is instant — the cost only hits when you actually search.
+
+## File structure after today
+
+```
+search/
+├── embedder.py        ← Day 3: semantic search (ChromaDB + MiniLM)
+├── bm25_index.py      ← Day 4: keyword search (BM25 with code tokenizer)
+├── hybrid_search.py   ← Day 5: RRF fusion (combines both)
+└── __init__.py
+```
+
+## How to run it
+
+```bash
+# Test with all three default queries (recommended — shows the comparison)
+python -m search.hybrid_search .
+
+# Test with a specific query
+python -m search.hybrid_search . "tokenize_code"
+python -m search.hybrid_search . "function that parses code"
+```
+
+## How This Connects
+
+```
+Day 1 ✅  Parser      → CodeChunk objects
+Day 2 ✅  Graph       → Import dependency edges
+Day 3 ✅  Embeddings  → Semantic search (meaning)
+Day 4 ✅  BM25        → Keyword search (exact tokens)
+Day 5 ✅  Fusion      → Combine both with RRF (Reciprocal Rank Fusion)
+Day 6     API + LLM   → FastAPI + GPT-4o answers
+Day 7     UI + Eval   → Streamlit + RAGAS scores
+```
+
+Tomorrow we build the FastAPI server and GPT-4o answer generation — the top 10 fused results become the "context" for the LLM prompt.

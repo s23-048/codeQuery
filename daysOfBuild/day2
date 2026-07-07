@@ -1,0 +1,288 @@
+
+# Day 2 Explained — The Dependency Graph
+
+## What We Built Today
+
+A module that figures out **which code files depend on which other files** by reading their `import` statements.
+
+```
+         main.py
+        /       \
+  service.py   (direct)
+   /     \        \
+utils.py  models.py
+```
+
+This tells us: "main.py depends on service.py, models.py, and utils.py. service.py depends on utils.py and models.py."
+
+---
+
+## Why Do We Need This?
+
+Imagine someone asks: "If I change the `User` class, what else breaks?"
+
+Without a dependency graph, you'd have to manually search every file for `import User`. With the graph, it's instant:
+```
+Who depends on User (models.py)?
+  → UserService (service.py)
+  → create_user (service.py)
+  → main (main.py)
+```
+
+It's also a demoable feature — you can show an interviewer a real graph of your codebase and explain how you built it.
+
+---
+
+## What Is a Graph? (The Data Structure)
+
+A graph is just **dots connected by arrows**:
+
+```
+Dots  = "nodes" (each code chunk is a node)
+Arrows = "edges" (an arrow from A to B means "A imports B")
+```
+
+It's called a **directed** graph (DiGraph) because the arrows have direction: "A imports B" is NOT the same as "B imports A."
+
+### Our Graph's Data Structure
+
+```python
+# Nodes: dictionary mapping node_id → attributes
+_nodes = {
+    "abc123": {"name": "UserService", "file_path": "service.py", ...},
+    "def456": {"name": "User",        "file_path": "models.py", ...},
+}
+
+# Forward edges: source → {target → attributes}
+_edges = {
+    "abc123": {"def456": {"relation": "imports"}},  # UserService imports User
+}
+
+# Reverse edges: target → {source → attributes}  (for quick "who uses me?" lookups)
+_reverse_edges = {
+    "def456": {"abc123": {"relation": "imports"}},  # User is imported by UserService
+}
+```
+
+**Why do we store edges in BOTH directions?**
+
+- **Forward edges** answer: "What does UserService depend on?" → just look up `_edges["abc123"]`
+- **Reverse edges** answer: "Who depends on User?" → just look up `_reverse_edges["def456"]`
+
+Without reverse edges, answering "who depends on User?" would require scanning ALL edges in the entire graph — slow for large codebases.
+
+---
+
+## How Python Imports Work
+
+Python has two kinds of import statements:
+
+```python
+# Kind 1: import <module>
+import os                    # module = "os"
+import parser.code_parser    # module = "parser.code_parser"
+
+# Kind 2: from <module> import <names>
+from pathlib import Path     # module = "pathlib", names = ["Path"]
+from models import User      # module = "models",  names = ["User"]
+```
+
+Python's `ast` module can parse these into structured data:
+```python
+ast.Import:     → module name = "os"
+ast.ImportFrom: → module = "models", names = ["User"], level = 0
+```
+
+`level` tells us about relative imports:
+- `level = 0` → absolute import (`from models import User`)
+- `level = 1` → relative import (`from . import utils`)
+
+---
+
+## How We Match Imports to Chunks
+
+When we find `from models import User`, we need to figure out WHICH chunk that refers to. We build three lookup tables:
+
+### Lookup 1: By chunk name
+```
+"User"           → [chunk for User class in models.py]
+"UserService"    → [chunk for UserService class in service.py]
+"format_output"  → [chunk for format_output function in utils.py]
+```
+This catches: `from models import User` → matches name "User"
+
+### Lookup 2: By file stem (filename without extension)
+```
+"models"  → [all chunks from models.py]
+"service" → [all chunks from service.py]
+"utils"   → [all chunks from utils.py]
+```
+This catches: `import models` → matches file stem "models"
+
+### Lookup 3: By dotted module path
+```
+"parser.code_parser" → [all chunks from parser/code_parser.py]
+```
+This catches: `import parser.code_parser` → matches full dotted path
+
+---
+
+## The Bug We Found and Fixed
+
+### The Problem
+
+Our first attempt had **0 edges**. Here's why:
+
+```python
+# service.py
+from utils import Logger     # ← This import is at FILE level
+from models import User      # ← This one too
+
+class UserService:            # ← Our parser extracts THIS as a chunk
+    def __init__(self):
+        self.logger = Logger("UserService")
+```
+
+The parser extracts `UserService` as a chunk — but the chunk's code is only:
+```python
+class UserService:
+    def __init__(self):
+        self.logger = Logger("UserService")
+```
+
+The `from utils import Logger` line is **NOT** inside the class — it's at the top of the file, outside any function or class. So when we tried to find imports inside chunk code, there were none!
+
+### The Fix
+
+Instead of looking for imports inside each chunk, we:
+1. **Read the full file** from disk
+2. Extract all file-level imports
+3. Attribute those imports to **every chunk in that file**
+
+```
+service.py has imports: [Logger, format_output, User]
+service.py has chunks:  [UserService, create_user]
+
+→ UserService imports Logger, format_output, User
+→ create_user imports Logger, format_output, User
+```
+
+This means every function/class in a file "inherits" the file's imports. It's not 100% precise (maybe `create_user` doesn't actually use `Logger`), but it's a reasonable approximation — and much better than 0 edges!
+
+---
+
+## The Code, Piece by Piece
+
+### `DiGraph` class ([L66–L184](file:///Users/sharanabasava/pp/projects/codeQuery/graph/dependency_graph.py#L66-L184))
+
+Our custom graph since networkx doesn't work with Python 3.14:
+
+| Method | What it does |
+|--------|-------------|
+| `add_node(id, **attrs)` | Add a dot to the graph |
+| `add_edge(source, target, **attrs)` | Draw an arrow between two dots |
+| `out_edges(id)` | "What does this node point TO?" |
+| `in_edges(id)` | "What points AT this node?" |
+| `to_dict()` / `from_dict()` | Convert to/from JSON-friendly format |
+
+### `extract_imports()` ([L192–L238](file:///Users/sharanabasava/pp/projects/codeQuery/graph/dependency_graph.py#L192-L238))
+
+Takes Python code → returns a list of import info:
+```python
+extract_imports("from models import User")
+# → [{"type": "from_import", "module": "models", "names": ["User"], "level": 0}]
+```
+
+Uses `try/except` around `ast.parse()` because a class body like:
+```python
+class Foo:
+    def bar(self):
+        pass
+```
+is valid Python inside a class, but `ast.parse()` might choke on edge cases.
+
+### `DependencyGraph.build()` ([L295–L443](file:///Users/sharanabasava/pp/projects/codeQuery/graph/dependency_graph.py#L295-L443))
+
+The main method. Three steps:
+1. Add all chunks as nodes
+2. Build the three lookup tables (name, stem, dotted path)
+3. For each Python file: read file → extract imports → match to chunks → add edges
+
+### `get_dependencies()` / `get_dependents()` ([L449–L483](file:///Users/sharanabasava/pp/projects/codeQuery/graph/dependency_graph.py#L449-L483))
+
+```python
+get_dependencies("UserService")  → ["Logger", "User", "format_output", ...]
+# "What does UserService need?"
+
+get_dependents("User")           → ["UserService", "create_user", "main"]
+# "What breaks if I change User?"
+```
+
+### `save()` / `load()` ([L562–L590](file:///Users/sharanabasava/pp/projects/codeQuery/graph/dependency_graph.py#L562-L590))
+
+Saves the graph as JSON so you don't have to rebuild it every time:
+```json
+{
+  "nodes": [{"id": "abc", "name": "User", "file_path": "models.py", ...}],
+  "edges": [{"source": "abc", "target": "def", "relation": "imports"}]
+}
+```
+
+---
+
+## Test Results
+
+Our test with `tests/dep_test/` (4 files, 8 chunks):
+
+| Metric | Value |
+|--------|-------|
+| Nodes | 8 |
+| Edges | 17 |
+| Most imported | User, Product (models.py) — 3 dependents each |
+| Most dependent | main (main.py) — depends on 7 chunks |
+| Pyright errors | 0 |
+
+```
+main.py ──imports──→ service.py ──imports──→ utils.py
+   │                    │
+   └──imports──→ models.py ←──imports──┘
+```
+
+---
+
+## Files Created/Modified Today
+
+```
+codeQuery/
+├── graph/
+│   ├── __init__.py              ← NEW
+│   └── dependency_graph.py      ← NEW (Day 2 main file)
+├── tests/
+│   └── dep_test/                ← NEW (test fixtures)
+│       ├── main.py
+│       ├── models.py
+│       ├── service.py
+│       └── utils.py
+├── parser/                      ← unchanged from Day 1
+└── requirements.txt             ← updated
+```
+
+---
+
+## How This Connects Forward
+
+```
+Day 1 ✅  Parser     → CodeChunk objects
+Day 2 ✅  Graph      → Import edges between chunks
+Day 3     Embeddings → Vector search (ChromaDB)
+Day 4     BM25       → Keyword search
+Day 5     Fusion     → Combine both searches (RRF)
+Day 6     API + LLM  → FastAPI + GPT-4o answers
+Day 7     UI + Eval  → Streamlit + RAGAS scores
+```
+
+The graph won't be directly used in the search pipeline (that's BM25 + embeddings). But it's:
+1. A **demoable feature** — shows the tool "understands" code relationships
+2. Exposed via a **`/graph` API endpoint** later
+3. Useful for **impact analysis** ("what breaks if I change X?")
+4. **Interview material** — shows you understand directed graphs, import resolution, and AST parsing

@@ -1,0 +1,217 @@
+# Day 4 Explained — BM25 Keyword Search
+
+## What We Built Today
+
+A keyword search engine that finds code by **exact word matching** — the other half of our search system.
+
+```
+Yesterday (embeddings):  "function that checks validity"  → finds validate_input  ✅
+Today (BM25):           "validate_input"                  → finds validate_input  ✅✅✅
+```
+
+Embeddings understand **meaning**. BM25 matches **exact words**. Together they cover everything.
+
+---
+
+## What Is BM25?
+
+BM25 (Best Matching 25) is the algorithm behind Google circa 2000. It's been the standard for keyword search for 30+ years.
+
+### The Intuition: Three Ideas Combined
+
+**Idea 1: Term Frequency (TF)** — "If the word appears more, it's more relevant"
+```
+Query: "validate"
+
+Document A: "def validate(data):  # validate input data..."  → "validate" appears 2x → high TF
+Document B: "def process(data):  # validate once..."         → "validate" appears 1x → lower TF
+```
+
+But with **diminishing returns** — the 10th occurrence matters less than the 1st. A document repeating "validate" 50 times isn't 50x more relevant than one with 1 occurrence.
+
+**Idea 2: Inverse Document Frequency (IDF)** — "Rare words are more informative"
+```
+"def" appears in 28 out of 29 documents   → IDF = very low (not informative)
+"validate" appears in 3 out of 29 documents → IDF = high (very informative!)
+"return" appears in 25 out of 29 documents  → IDF = very low (noise)
+```
+
+This is why searching "validate input" works well — "validate" is rare (high IDF) while "def" and "return" are common (low IDF, ignored).
+
+**Idea 3: Document Length** — "Don't favor long documents"
+```
+A 500-line file naturally contains more words than a 5-line function.
+Without normalization, long files would always score higher.
+BM25 divides by document length to make scoring fair.
+```
+
+---
+
+## Why Can't We Just Use Embeddings for Everything?
+
+```
+Query: "executeCode"
+
+Embeddings:  text → 384 numbers → search by distance
+  "executeCode" → [0.31, 0.72, -0.15, ...]  (384 numbers)
+  
+  The specific tokens "execute" and "Code" get blended into a 
+  384-dimensional average. The exact identity is diluted.
+
+BM25:  text → tokens → exact match
+  "executeCode" → ["execute", "code"]
+  
+  Finds ANY document containing these exact tokens.
+  If a function is named executeCode, BM25 will find it 100% of the time.
+```
+
+### The Comparison Table
+
+| Query Type | BM25 | Embeddings | Example |
+|-----------|------|------------|---------|
+| Exact function name | ✅ **Wins** | OK | "validate_input" |
+| Exact class name | ✅ **Wins** | OK | "DataProcessor" |
+| Meaning/intent | ❌ Loses | ✅ **Wins** | "function that checks if data is valid" |
+| Conceptual | ❌ Loses | ✅ **Wins** | "calculate sum of numbers" |
+| Mixed | OK | OK | Both contribute |
+
+---
+
+## Code-Aware Tokenization — The Secret Sauce
+
+Plain text tokenization doesn't work on code:
+
+```python
+# Plain split:
+"executeCode".split()  → ["executeCode"]  # one big token, useless
+
+# Our tokenizer:
+tokenize_code("executeCode")  → ["execute", "code"]  # now "execute code" matches!
+```
+
+### The Four Steps
+
+```python
+def tokenize_code(text):
+    # Step 1: camelCase → separate words
+    "executeCode"    → "execute Code"
+    "DataProcessor"  → "Data Processor"
+    
+    # Step 2: ALLCAPS → separate
+    "HTMLParser"     → "HTML Parser"
+    
+    # Step 3: Replace non-letters with spaces
+    "validate_input" → "validate input"     # underscores
+    "parser/code.py" → "parser code py"     # paths
+    "a.b.c"          → "a b c"              # dots
+    
+    # Step 4: Lowercase + remove tiny tokens
+    "Data Processor" → ["data", "processor"]
+    "a b c"          → ["c"]                # "a" and "b" dropped (too short)
+```
+
+### Why This Matters
+
+Without this tokenization:
+- Searching "execute code" would NOT match `executeCode`
+- Searching "data processor" would NOT match `DataProcessor`
+- Searching "validate input" would NOT match `validate_input`
+
+With it, all these queries work because both sides get the same tokens.
+
+---
+
+## How rank_bm25 Works
+
+```python
+from rank_bm25 import BM25Okapi
+
+# Step 1: Build (give it tokenized documents)
+corpus = [
+    ["validate", "input", "data", "dict"],    # chunk 1's tokens
+    ["format", "output", "text", "width"],     # chunk 2's tokens
+    ["data", "processor", "class"],            # chunk 3's tokens
+]
+bm25 = BM25Okapi(corpus)
+
+# Step 2: Search (give it tokenized query)
+scores = bm25.get_scores(["validate", "input"])
+# → [7.38, 0.0, 1.31]  (chunk 1 scores highest)
+```
+
+That's literally the whole library. It handles all the TF/IDF/length math internally.
+
+---
+
+## Persistence with Pickle
+
+```python
+# Save
+import pickle
+with open("bm25_index.pkl", "wb") as f:
+    pickle.dump({"bm25": bm25, "chunks": chunks, "corpus": corpus}, f)
+
+# Load
+with open("bm25_index.pkl", "rb") as f:
+    data = pickle.load(f)
+```
+
+**Why pickle instead of JSON?**
+BM25Okapi stores numpy arrays internally. Pickle handles any Python object natively. JSON can only store basic types (strings, numbers, lists).
+
+**Why not ChromaDB like embeddings?**
+BM25 doesn't use vectors — it uses token frequency tables. ChromaDB is a vector database. Different data = different storage.
+
+---
+
+## Test Results
+
+### BM25 Default Queries (our codebase, 29 chunks)
+
+| Query | #1 Result | Score |
+|-------|-----------|-------|
+| "validate_input" | ✅ validate_input | 7.38 |
+| "DataProcessor" | ✅ DataProcessor | 6.12 |
+| "format output text width" | ✅ format_output | 16.31 |
+
+### Head-to-Head: BM25 vs Embeddings
+
+| Query | BM25 #1 | Embed #1 | Winner |
+|-------|---------|----------|--------|
+| `validate_input` | ✅ validate_input | ✅ validate_input | Tie |
+| `DataProcessor` | ✅ DataProcessor | ✅ DataProcessor | Tie |
+| "function that checks if data is valid" | ❌ main | ✅ validate_input | **Embeddings** |
+| "calculate sum of numbers" | ❌ BM25Index | ✅ Calculator | **Embeddings** |
+
+**Key takeaway:** Neither search alone is perfect. BM25 nails exact names, embeddings nail meaning. Fusing them (Day 5) gives us both.
+
+---
+
+## Files Created Today
+
+```
+codeQuery/
+├── search/
+│   ├── __init__.py          ← Day 3
+│   ├── embedder.py          ← Day 3
+│   └── bm25_index.py        ← NEW (Day 4 main file)
+├── parser/                  ← Day 1 ✅
+├── graph/                   ← Day 2 ✅
+└── requirements.txt         ← updated (rank-bm25)
+```
+
+---
+
+## How This Connects
+
+```
+Day 1 ✅  Parser      → CodeChunk objects
+Day 2 ✅  Graph       → Import dependency edges
+Day 3 ✅  Embeddings  → Semantic search (meaning)
+Day 4 ✅  BM25        → Keyword search (exact tokens)
+Day 5     Fusion      → Combine both with RRF (Reciprocal Rank Fusion)
+Day 6     API + LLM   → FastAPI + GPT-4o answers
+Day 7     UI + Eval   → Streamlit + RAGAS scores
+```
+
+Tomorrow we combine both search engines with **RRF** — a simple but powerful fusion algorithm that takes the top results from each, re-ranks them, and produces a single list that's better than either alone.

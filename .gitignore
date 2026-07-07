@@ -30,8 +30,6 @@ chroma_db/
 repos/
 *.pkl
 *.pickle
-graph.json
-graph_test.json
 logs/
 *.log
 
