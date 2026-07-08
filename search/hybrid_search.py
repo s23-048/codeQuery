@@ -562,12 +562,12 @@ class HybridSearch:
 
     def get_stats(self) -> dict:
         """Get combined stats from both indexes."""
-        stats = {"hybrid": True}
+        stats: dict[str, object] = {"hybrid": True}
 
-        if self._embedder:
+        if self._embedder is not None:
             stats["embedding"] = self._embedder.get_collection_info()
 
-        if self._bm25:
+        if self._bm25 is not None:
             stats["bm25"] = self._bm25.get_stats()
 
         stats["cached_chunks"] = len(self._chunk_lookup)

@@ -1,0 +1,145 @@
+# Day 6 — Answerer + FastAPI API
+
+## What we built
+
+Two new modules:
+- `llm/answerer.py` — Takes fused search results, builds a prompt, calls GPT-4o, returns answer + citations
+- `api/main.py` — FastAPI server with 3 routes: `/index`, `/query`, `/status`
+
+This is the day it stops being a library and starts being a **product** you can curl.
+
+## How the answer pipeline works
+
+```
+User question
+      │
+      ▼
+ HybridSearch.search(query, top_k=5)
+      │
+      ├── Semantic search (embeddings) ──┐
+      ├── BM25 search (keywords)         ├── RRF fusion
+      └─────────────────────────────────-┘
+                    │
+                    ▼
+              Top 5 chunks
+                    │
+                    ▼
+         build_context() — formats chunks with file paths + line numbers
+                    │
+                    ▼
+           GPT-4o (temperature=0)
+                    │
+                    ▼
+         Answer + source citations + latency_ms
+```
+
+## answerer.py — Key design decisions
+
+### 1. Structured context format
+Each chunk gets a clear header:
+```
+--- Chunk 1/5 ---
+File: parser/code_parser.py (lines 103-118)
+Type: function | Name: to_search_text
+Code:
+def to_search_text(self) -> str:
+    ...
+```
+This structure helps GPT-4o cite sources accurately — it knows the file path and line numbers for each piece of code it references.
+
+### 2. temperature=0
+We want deterministic, factual answers. Not creative writing. For code analysis, reproducibility matters more than variety.
+
+### 3. Latency tracking
+Every answer includes `latency_ms`. Sub-2-second end-to-end is the target. This is a claim worth backing up in a live demo.
+
+### 4. Graceful error handling
+If the API call fails (bad key, rate limit, timeout), the answer field contains the error message instead of crashing. The sources still come through — you can still see what was retrieved.
+
+## api/main.py — Three routes
+
+### `GET /status`
+Health check + index stats. Hit this first to verify the server is alive.
+
+### `POST /index`
+Clone a repo → parse → chunk → build hybrid index.
+```bash
+curl -X POST http://localhost:8000/index \
+  -H "Content-Type: application/json" \
+  -d '{"repo_url": "https://github.com/user/repo.git"}'
+```
+
+### `POST /query`
+Search + answer with citations.
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "How does the parser handle JavaScript files?", "top_k": 5}'
+```
+
+### State management
+Module-level `AppState` class holds the HybridSearch and CodeAnswerer instances. This is fine for a demo. In production, you'd use Redis for shared state across workers — this is a good interview point.
+
+## Test results
+
+```json
+// POST /index response
+{
+  "status": "success",
+  "repo_url": "https://github.com/s23-048/codeQuery.git",
+  "chunks_indexed": 32,
+  "index_time_seconds": 8.82,
+  "message": "Successfully indexed 32 code chunks from codeQuery"
+}
+
+// POST /query response (search worked, needs real API key for answer)
+{
+  "sources": [
+    {"file_path": "parser/code_parser.py", "name": "CodeParser", ...},
+    {"file_path": "parser/code_parser.py", "name": "CodeChunk", ...},
+    {"file_path": "tests/test_sample.ts", "name": "handleRequest", ...}
+  ],
+  "latency_ms": 1157,
+  "context_chunks": 5
+}
+```
+
+The search pipeline found the right chunks — CodeParser class, CodeChunk, and even a TypeScript test file. GPT-4o just needs a real API key in `.env`.
+
+## To make it work with a real API key
+
+Edit `.env` and set your actual OpenAI key:
+```
+LLM_API_KEY=sk-your-real-key-here
+```
+
+Then restart the server and query again.
+
+## File structure after today
+
+```
+codequery/
+├── parser/code_parser.py       ← Day 1: AST chunking
+├── graph/dependency_graph.py   ← Day 2: Import graph
+├── search/
+│   ├── embedder.py             ← Day 3: Semantic search
+│   ├── bm25_index.py           ← Day 4: Keyword search
+│   └── hybrid_search.py       ← Day 5: RRF fusion
+├── llm/answerer.py             ← Day 6: GPT-4o answers ← NEW
+├── api/main.py                 ← Day 6: FastAPI server ← NEW
+└── ...
+```
+
+## How This Connects
+
+```
+Day 1 ✅  Parser      → CodeChunk objects
+Day 2 ✅  Graph       → Import dependency edges
+Day 3 ✅  Embeddings  → Semantic search (meaning)
+Day 4 ✅  BM25        → Keyword search (exact tokens)
+Day 5 ✅  Fusion      → Combine both with RRF
+Day 6 ✅  API + LLM   → FastAPI + GPT-4o answers
+Day 7     UI + Eval   → Streamlit + RAGAS scores
+```
+
+Tomorrow: Streamlit chat UI + RAGAS evaluation — the finish line.
