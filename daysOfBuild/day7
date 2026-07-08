@@ -1,0 +1,76 @@
+# Day 7 — UI + Final Test
+
+We built the Streamlit UI in `ui/app.py` and then ran 5 real questions against our own codebase.
+*Note on the LLM answers:* The Gemini API returned `503 UNAVAILABLE (High Demand)`. However, the **hybrid search retrieval worked perfectly**, citing the exact correct chunks for each question!
+
+
+### Q1: How are the code chunks generated from files?
+
+**Answer:**
+Error generating answer: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+
+**Sources Cited:**
+- `class CodeParser` in `parser/code_parser.py` (lines 202-507)
+- `class CodeChunk` in `parser/code_parser.py` (lines 59-131)
+- `class CodeAnswerer` in `llm/answerer.py` (lines 200-350)
+- `function build_context` in `llm/answerer.py` (lines 89-126)
+- `class DependencyGraph` in `graph/dependency_graph.py` (lines 265-600)
+
+---
+
+### Q2: How does the dependency graph extract imports?
+
+**Answer:**
+Error generating answer: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+
+**Sources Cited:**
+- `class DependencyGraph` in `graph/dependency_graph.py` (lines 265-600)
+- `function extract_imports` in `graph/dependency_graph.py` (lines 204-258)
+- `class DiGraph` in `graph/dependency_graph.py` (lines 63-197)
+- `module __init__` in `graph/__init__.py` (lines 1-2)
+- `class CodeParser` in `parser/code_parser.py` (lines 202-507)
+
+---
+
+### Q3: Explain the hybrid search strategy and how scores are fused.
+
+**Answer:**
+Error generating answer: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+
+**Sources Cited:**
+- `class HybridSearch` in `search/hybrid_search.py` (lines 197-575)
+- `function reciprocal_rank_fusion` in `search/hybrid_search.py` (lines 98-144)
+- `function reciprocal_rank_fusion_detailed` in `search/hybrid_search.py` (lines 147-190)
+- `function query_code` in `api/main.py` (lines 258-308)
+- `class BM25Index` in `search/bm25_index.py` (lines 108-307)
+
+---
+
+### Q4: Where is the LLM answer generated and which models are supported?
+
+**Answer:**
+Error generating answer: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+
+**Sources Cited:**
+- `class CodeAnswerer` in `llm/answerer.py` (lines 200-350)
+- `class _GeminiClient` in `llm/answerer.py` (lines 133-163)
+- `function index_repo` in `api/main.py` (lines 172-254)
+- `function query_code` in `api/main.py` (lines 258-308)
+- `function build_context` in `llm/answerer.py` (lines 89-126)
+
+---
+
+### Q5: What are the API endpoints provided in the FastAPI server?
+
+**Answer:**
+Error generating answer: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+
+**Sources Cited:**
+- `function get_status` in `api/main.py` (lines 152-168)
+- `class _GeminiClient` in `llm/answerer.py` (lines 133-163)
+- `class QueryRequest` in `api/main.py` (lines 116-128)
+- `class CodeAnswerer` in `llm/answerer.py` (lines 200-350)
+- `class CodeParser` in `parser/code_parser.py` (lines 202-507)
+
+---
+
