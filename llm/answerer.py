@@ -5,9 +5,7 @@ CodeQuery — LLM Answer Generation
 This module takes the top chunks from hybrid search and uses an LLM to
 generate a grounded answer with citations.
 
-Supports two providers:
-- **Google Gemini** (default, free tier available) — gemini-2.0-flash
-- **OpenAI GPT-4o** (fallback, requires paid API key)
+Supports generating answers using Google Gemini.
 
 Why "grounded" answers matter
 ------------------------------
@@ -46,26 +44,14 @@ load_dotenv()
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Provider: "gemini" (free) or "openai" (paid)
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini").lower()
-
 # API keys — check multiple env var names for flexibility
 GEMINI_API_KEY = (
     os.environ.get("GEMINI_API_KEY")
     or os.environ.get("GOOGLE_API_KEY")
     or os.environ.get("LLM_API_KEY", "")
 )
-OPENAI_API_KEY = (
-    os.environ.get("OPENAI_API_KEY")
-    or os.environ.get("LLM_API_KEY", "")
-)
 
-# Default models per provider
-DEFAULT_MODELS = {
-    "gemini": "gemini-3.5-flash",     # Free tier, fast, great for code
-    "openai": "gpt-4o",               # Paid, best quality
-}
-MODEL = os.environ.get("LLM_MODEL", DEFAULT_MODELS.get(LLM_PROVIDER, "gemini-3.5-flash"))
+MODEL = os.environ.get("LLM_MODEL", "gemini-2.5-flash")
 
 # How many chunks to include in the LLM context.
 DEFAULT_CONTEXT_CHUNKS = 5
@@ -164,36 +150,6 @@ class _GeminiClient:
 
 
 # ---------------------------------------------------------------------------
-# OpenAI Client
-# ---------------------------------------------------------------------------
-
-class _OpenAIClient:
-    """
-    Wrapper around OpenAI's GPT-4o API.
-
-    Used as a fallback when LLM_PROVIDER=openai. Requires a paid API key.
-    """
-
-    def __init__(self, api_key: str, model: str) -> None:
-        from openai import OpenAI
-        self._client = OpenAI(api_key=api_key)
-        self._model = model
-
-    def generate(self, system_prompt: str, user_message: str) -> str:
-        """Generate a response from OpenAI."""
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0,
-            max_tokens=1024,
-        )
-        return response.choices[0].message.content or ""
-
-
-# ---------------------------------------------------------------------------
 # Answerer
 # ---------------------------------------------------------------------------
 
@@ -201,13 +157,10 @@ class CodeAnswerer:
     """
     Generates grounded answers from code context using an LLM.
 
-    Supports both Gemini (free) and OpenAI (paid) as providers.
-
     Usage:
         from llm.answerer import CodeAnswerer
 
-        answerer = CodeAnswerer()                    # Uses Gemini by default
-        answerer = CodeAnswerer(provider="openai")   # Or use OpenAI
+        answerer = CodeAnswerer()
 
         result = answerer.answer(
             query="How does the parser handle JavaScript files?",
@@ -226,7 +179,6 @@ class CodeAnswerer:
         self,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
-        provider: Optional[str] = None,
     ) -> None:
         """
         Initialize the answerer.
@@ -236,18 +188,10 @@ class CodeAnswerer:
         api_key : str, optional
             API key. If not provided, reads from env vars.
         model : str, optional
-            Model name. Defaults based on provider.
-        provider : str, optional
-            "gemini" or "openai". Defaults to LLM_PROVIDER env var.
+            Model name.
         """
-        self._provider = provider or LLM_PROVIDER
         self._model = model or MODEL
-
-        if self._provider == "gemini":
-            self._api_key = api_key or GEMINI_API_KEY
-        else:
-            self._api_key = api_key or OPENAI_API_KEY
-
+        self._api_key = api_key or GEMINI_API_KEY
         self._client: object = None
 
     def _ensure_client(self) -> object:
@@ -255,15 +199,9 @@ class CodeAnswerer:
         if self._client is None:
             if not self._api_key:
                 raise ValueError(
-                    f"No API key found for provider '{self._provider}'. "
-                    f"Set GEMINI_API_KEY (or GOOGLE_API_KEY) in your .env file "
-                    f"for Gemini, or OPENAI_API_KEY for OpenAI."
+                    "No API key found. Set GEMINI_API_KEY (or GOOGLE_API_KEY) in your .env file."
                 )
-
-            if self._provider == "gemini":
-                self._client = _GeminiClient(self._api_key, self._model)
-            else:
-                self._client = _OpenAIClient(self._api_key, self._model)
+            self._client = _GeminiClient(self._api_key, self._model)
 
         return self._client
 
@@ -291,7 +229,6 @@ class CodeAnswerer:
             - answer: str — the generated answer
             - sources: list[dict] — the chunks used as context
             - model: str — which model was used
-            - provider: str — "gemini" or "openai"
             - latency_ms: int — end-to-end generation time in milliseconds
             - context_chunks: int — how many chunks were in the context
             - query: str — the original query
@@ -333,7 +270,6 @@ class CodeAnswerer:
             "answer": answer_text,
             "sources": sources,
             "model": self._model,
-            "provider": self._provider,
             "latency_ms": elapsed_ms,
             "context_chunks": len(selected),
             "query": query,
@@ -356,14 +292,12 @@ class CodeAnswerer:
 
 if __name__ == "__main__":
     print("Testing CodeAnswerer...")
-    print(f"  Provider: {LLM_PROVIDER}")
     print(f"  Model: {MODEL}")
 
-    key = GEMINI_API_KEY if LLM_PROVIDER == "gemini" else OPENAI_API_KEY
-    print(f"  API Key: {'✓ set' if key else '✗ NOT SET'}")
+    print(f"  API Key: {'✓ set' if GEMINI_API_KEY else '✗ NOT SET'}")
 
-    if not key:
-        print(f"\n⚠ Set {'GEMINI_API_KEY' if LLM_PROVIDER == 'gemini' else 'OPENAI_API_KEY'} in .env")
+    if not GEMINI_API_KEY:
+        print("\n⚠ Set GEMINI_API_KEY in .env")
         exit(1)
 
     # Create fake chunks for testing
@@ -406,7 +340,6 @@ if __name__ == "__main__":
 
     print(f"\n{'='*60}")
     print(f"Query: {result['query']}")
-    print(f"Provider: {result['provider']}")
     print(f"Model: {result['model']}")
     print(f"Latency: {result['latency_ms']}ms")
     print(f"Context chunks: {result['context_chunks']}")

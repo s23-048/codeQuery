@@ -8,7 +8,6 @@
   ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
   ![HuggingFace](https://img.shields.io/badge/HuggingFace-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black)
   ![Google Gemini](https://img.shields.io/badge/Google%20Gemini-8E75B2?style=for-the-badge&logo=google&logoColor=white)
-  ![OpenAI](https://img.shields.io/badge/OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white)
 </div>
 
 CodeQuery is an enterprise-grade **Code Search and Retrieval-Augmented Generation (RAG)** pipeline. It allows you to index any public GitHub repository and interact with the codebase using natural language. 
@@ -36,7 +35,7 @@ Semantic search is great for concepts, but terrible for finding exact variables 
 Since Vector distances and BM25 scores are mathematically incompatible, CodeQuery merges the two search results using **Reciprocal Rank Fusion (RRF)**. It completely ignores the raw scores and merges the results based purely on their relative ranks, guaranteeing the best of both worlds.
 
 ### 5. Grounded Generation (`llm/answerer.py`)
-The top 5 fused chunks are structured into a strict prompt containing the file paths and line numbers. The LLM (Google Gemini or OpenAI GPT-4o) is run with `temperature=0` to ensure deterministic, hallucination-free answers.
+The top 5 fused chunks are structured into a strict prompt containing the file paths and line numbers. The LLM (Google Gemini) is run with `temperature=0` to ensure deterministic, hallucination-free answers.
 
 ### 6. API & UI (`api/`, `ui/`)
 * **FastAPI Backend:** Provides `/index` (to clone and process a repo) and `/query` endpoints.
@@ -48,7 +47,7 @@ The top 5 fused chunks are structured into a strict prompt containing the file p
 
 ### Prerequisites
 * Python 3.10+
-* A free Gemini API key (from [Google AI Studio](https://aistudio.google.com/apikey)) or an OpenAI API key.
+* A free Gemini API key (from [Google AI Studio](https://aistudio.google.com/apikey)).
 
 ### Installation
 
@@ -68,7 +67,7 @@ The top 5 fused chunks are structured into a strict prompt containing the file p
 3. **Configure Environment Variables:**
    Rename `.env.example` to `.env` (or create a `.env` file) and add your API key:
    ```env
-   # LLM Provider: gemini (free) | openai (paid)
+   # LLM Model (Gemini)
    LLM_PROVIDER=gemini
    LLM_MODEL=gemini-2.5-flash
    GEMINI_API_KEY=your_key_here
@@ -115,6 +114,6 @@ The UI will open in your browser at `http://localhost:8501`.
 * **Embeddings:** HuggingFace `sentence-transformers` (all-MiniLM-L6-v2)
 * **Keyword Search:** `rank-bm25`
 * **Graph/Dependencies:** `networkx`
-* **LLM Integration:** `google-genai` (Gemini), `openai`
+* **LLM Integration:** `google-genai` (Gemini)
 * **Backend:** FastAPI, Uvicorn
 * **Frontend:** Streamlit
