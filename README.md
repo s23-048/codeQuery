@@ -1,5 +1,16 @@
 # CodeQuery 🔍
 
+<div align="center">
+  <p><strong>Repository-scale code search: Semantic embeddings + BM25 keyword search + LLM generation</strong></p>
+
+  ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
+  ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+  ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
+  ![HuggingFace](https://img.shields.io/badge/HuggingFace-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black)
+  ![Google Gemini](https://img.shields.io/badge/Google%20Gemini-8E75B2?style=for-the-badge&logo=google&logoColor=white)
+  ![OpenAI](https://img.shields.io/badge/OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white)
+</div>
+
 CodeQuery is an enterprise-grade **Code Search and Retrieval-Augmented Generation (RAG)** pipeline. It allows you to index any public GitHub repository and interact with the codebase using natural language. 
 
 Instead of relying on naive chunking strategies or standard vector searches, CodeQuery implements a highly robust pipeline combining Abstract Syntax Tree (AST) parsing, Hybrid Search (Semantic + BM25), and Reciprocal Rank Fusion (RRF) to ensure the LLM generates strictly grounded, accurate answers with precise file and line-level citations.
